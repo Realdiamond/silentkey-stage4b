@@ -17,6 +17,8 @@ export interface DecryptedMessage {
   decryptionFailed: boolean;
   createdAt: string;
   delivered: boolean;
+  /** True while the message is optimistically added but not yet confirmed by REST. */
+  pending?: boolean;
 }
 
 /**
