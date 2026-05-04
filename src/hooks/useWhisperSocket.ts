@@ -20,6 +20,10 @@ const WS_CLOSE_TOKEN_INVALID = 4003;
 /** Proactive refresh: fire 60 s before the 15-minute access-token expiry. */
 const PROACTIVE_REFRESH_MS = (15 * 60 - 60) * 1000; // 14 minutes
 
+/** Auto-reconnect backoff schedule (milliseconds). */
+const BACKOFF_SCHEDULE = [1000, 2000, 4000, 8000, 10000];
+const MAX_RETRIES = BACKOFF_SCHEDULE.length;
+
 interface UseWhisperSocketOptions {
   accessToken: string | null;
   /** Hook only opens the socket when this is true. */
@@ -57,11 +61,12 @@ interface UseWhisperSocketReturn {
  *
  * Reliability features:
  * - Connection generation counter prevents stale socket handlers.
+ * - Automatic reconnect with exponential backoff (1s → 2s → 4s → 8s → 10s).
  * - Handles close code 4001 (expired) → auto-refresh + reconnect.
  * - Handles close code 4003 (invalid) → immediate redirect to login.
  * - Proactive refresh timer fires at the 14-minute mark to prevent 4001.
  * - sendJson checks ws.readyState directly (synchronous, not state).
- * - Does NOT auto-reconnect in a loop; `reconnect()` is manual for other codes.
+ * - Manual reconnect() resets retry count.
  */
 export function useWhisperSocket({
   accessToken,
@@ -77,6 +82,8 @@ export function useWhisperSocket({
   const wsRef = useRef<WebSocket | null>(null);
   const connGen = useRef(0);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryCountRef = useRef(0);
 
   // Callback refs — keeps the socket stable when callbacks change
   const onMessageReceiveRef = useRef(onMessageReceive);
@@ -99,6 +106,13 @@ export function useWhisperSocket({
     if (refreshTimerRef.current) {
       clearTimeout(refreshTimerRef.current);
       refreshTimerRef.current = null;
+    }
+  }, []);
+
+  const clearRetryTimer = useCallback(() => {
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
     }
   }, []);
 
@@ -127,6 +141,7 @@ export function useWhisperSocket({
       wsRef.current = null;
     }
     clearRefreshTimer();
+    clearRetryTimer();
 
     const gen = ++connGen.current;
     const ws = createWhisperSocket(token);
@@ -134,10 +149,14 @@ export function useWhisperSocket({
 
     wsRef.current = ws;
     setStatus("connecting");
+    console.log("[SilentKey WS] connecting");
 
     ws.onopen = () => {
       if (connGen.current !== gen) return;
+      console.log("[SilentKey WS] open");
       setStatus("open");
+      // Reset retry count on successful connection
+      retryCountRef.current = 0;
 
       // Start proactive refresh timer — fires at 14 min to refresh
       // the access token BEFORE the server drops us with 4001.
@@ -146,7 +165,6 @@ export function useWhisperSocket({
         console.log("[SilentKey WS] proactive token refresh at 14-min mark");
         const newToken = await onTokenExpiredRef.current?.();
         if (newToken && connGen.current === gen) {
-          // Reconnect with the fresh token
           connGen.current += 1;
           teardown(ws);
           wsRef.current = null;
@@ -161,39 +179,61 @@ export function useWhisperSocket({
       wsRef.current = null;
 
       // ── Handle WhisperBox custom close codes ──
+
       if (ev.code === WS_CLOSE_TOKEN_EXPIRED) {
-        console.log("[SilentKey WS] close 4001 — token expired, attempting refresh");
-        setStatus("connecting"); // show "Connecting…" while refreshing
+        console.log("[SilentKey WS] closed (4001 — token expired)");
+        setStatus("connecting");
 
         const newToken = await onTokenExpiredRef.current?.();
         if (newToken && connGen.current === gen) {
-          // Success — reconnect with the refreshed token
+          retryCountRef.current = 0;
           connect(newToken);
           return;
         }
 
-        // Refresh failed — treat as fatal
-        console.warn("[SilentKey WS] refresh failed after 4001 — redirecting to login");
+        console.warn("[SilentKey WS] refresh failed after 4001");
         onTokenInvalidRef.current?.();
         setStatus("error");
         return;
       }
 
       if (ev.code === WS_CLOSE_TOKEN_INVALID) {
-        console.warn("[SilentKey WS] close 4003 — token invalid, redirecting to login");
+        console.warn("[SilentKey WS] closed (4003 — token invalid)");
         onTokenInvalidRef.current?.();
         setStatus("error");
         return;
       }
 
-      // Normal / abnormal close
-      const wasAbnormal = ev.code !== 1000 && ev.code !== 1001;
-      setStatus(wasAbnormal ? "error" : "closed");
+      // Normal close (1000/1001) — no retry
+      if (ev.code === 1000 || ev.code === 1001) {
+        console.log("[SilentKey WS] closed (normal)");
+        setStatus("closed");
+        return;
+      }
+
+      // ── Abnormal close — auto reconnect with backoff ──
+      console.log(`[SilentKey WS] closed (code ${ev.code})`);
+
+      if (retryCountRef.current < MAX_RETRIES) {
+        const delay = BACKOFF_SCHEDULE[retryCountRef.current] ?? 10000;
+        retryCountRef.current += 1;
+        console.log(`[SilentKey WS] reconnect scheduled in ${delay}ms (attempt ${retryCountRef.current}/${MAX_RETRIES})`);
+        setStatus("connecting"); // show "Connecting…" during retry, not error
+        retryTimerRef.current = setTimeout(() => {
+          if (connGen.current !== gen) return;
+          connect();
+        }, delay);
+      } else {
+        // Max retries exhausted — show error, user can manually retry
+        console.warn("[SilentKey WS] max retries reached");
+        setStatus("error");
+      }
     };
 
     ws.onerror = () => {
       if (connGen.current !== gen) return;
-      setStatus("error");
+      // onerror always fires before onclose — onclose handles status + retry
+      // Don't set "error" here; let onclose decide based on retry budget
     };
 
     ws.onmessage = (event: MessageEvent<unknown>) => {
@@ -207,7 +247,7 @@ export function useWhisperSocket({
       }
 
       if (isMessageReceiveEvent(parsed)) {
-        console.log("[SilentKey WS] received message.receive");
+        console.log("[SilentKey WS] received message");
         onMessageReceiveRef.current?.(parsed);
         return;
       }
@@ -222,25 +262,26 @@ export function useWhisperSocket({
       }
 
       if (isWebSocketErrorEvent(parsed)) {
-        console.warn("[SilentKey WS] server error event received");
+        console.warn("[SilentKey WS] server error event");
         onSocketErrorRef.current?.(parsed.detail);
         return;
       }
-
-      // Unknown event — ignore
     };
-  }, [enabled, accessToken, teardown, clearRefreshTimer]);
+  }, [enabled, accessToken, teardown, clearRefreshTimer, clearRetryTimer]);
 
   // ── Effect: open/close based on enabled + accessToken ───────────────────────
 
   useEffect(() => {
     if (enabled && accessToken) {
+      console.log("[SilentKey WS] enabled");
+      retryCountRef.current = 0;
       connect();
     }
 
     return () => {
       connGen.current += 1;
       clearRefreshTimer();
+      clearRetryTimer();
       if (wsRef.current) {
         teardown(wsRef.current);
         wsRef.current = null;
@@ -264,30 +305,29 @@ export function useWhisperSocket({
     }
   }, []);
 
-  // ── Manual reconnect ─────────────────────────────────────────────────────────
+  // ── Manual reconnect (resets retry count) ─────────────────────────────────────
 
   const reconnect = useCallback(() => {
     if (!enabled || !accessToken) return;
     connGen.current += 1;
     clearRefreshTimer();
-    if (wsRef.current) {
-      teardown(wsRef.current);
-      wsRef.current = null;
-    }
+    clearRetryTimer();
+    retryCountRef.current = 0; // manual reconnect resets the backoff
     connect();
-  }, [enabled, accessToken, connect, teardown, clearRefreshTimer]);
+  }, [enabled, accessToken, connect, teardown, clearRefreshTimer, clearRetryTimer]);
 
   // ── Manual close ─────────────────────────────────────────────────────────────
 
   const close = useCallback(() => {
     connGen.current += 1;
     clearRefreshTimer();
+    clearRetryTimer();
     if (wsRef.current) {
       teardown(wsRef.current);
       wsRef.current = null;
     }
     setStatus("closed");
-  }, [teardown, clearRefreshTimer]);
+  }, [teardown, clearRefreshTimer, clearRetryTimer]);
 
   return {
     status,

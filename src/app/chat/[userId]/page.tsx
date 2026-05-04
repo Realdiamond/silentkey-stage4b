@@ -185,10 +185,14 @@ function ChatContent() {
     router.push("/login");
   }, [router]);
 
+  const wsEnabled = Boolean(
+    isAuthenticated && isCryptoReady && accessToken && privateKey && user && recipientUserId
+  );
+
   // ── WebSocket ────────────────────────────────────────────────────────────────
   const { status: socketStatus, isOpen: wsIsOpen, sendJson, reconnect } = useWhisperSocket({
     accessToken,
-    enabled: isCryptoReady && isAuthenticated,
+    enabled: wsEnabled,
     onMessageReceive: handleMessageReceive,
     onUserOnline: handleUserOnline,
     onUserOffline: handleUserOffline,
