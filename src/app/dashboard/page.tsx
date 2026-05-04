@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
+import { useUnread } from "@/context/UnreadContext";
 import { ConversationList } from "@/components/ConversationList";
 import { UserSearch } from "@/components/UserSearch";
 import { DashboardHeader } from "@/components/DashboardHeader";
@@ -21,6 +22,7 @@ export default function DashboardPage() {
     isLoading,
     logout,
   } = useAuth();
+  const { clear: clearUnread } = useUnread();
 
   /**
    * On mobile the sidebar slides in as a drawer.
@@ -55,6 +57,7 @@ export default function DashboardPage() {
       name: u.display_name,
       username: u.username,
     });
+    clearUnread(u.id);
     setSidebarOpen(false);
     router.push(`/chat/${encodeURIComponent(u.id)}?${params.toString()}`);
   };
@@ -64,9 +67,10 @@ export default function DashboardPage() {
       name: c.display_name,
       username: c.username,
     });
+    clearUnread(c.user_id);
     setSidebarOpen(false);
     router.push(`/chat/${encodeURIComponent(c.user_id)}?${params.toString()}`);
-  }, [router]);
+  }, [router, clearUnread]);
 
   // ── Loading splash ───────────────────────────────────────────────────────────
   if (isLoading || !user) {

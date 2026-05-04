@@ -1,6 +1,7 @@
 "use client";
 
 import { AuthProvider } from "@/context/AuthContext";
+import { UnreadProvider } from "@/context/UnreadContext";
 import type { ReactNode } from "react";
 
 /**
@@ -9,5 +10,9 @@ import type { ReactNode } from "react";
  * Next.js metadata support while enabling client-side context.
  */
 export function Providers({ children }: { children: ReactNode }) {
-  return <AuthProvider>{children}</AuthProvider>;
+  return (
+    <AuthProvider>
+      <UnreadProvider>{children}</UnreadProvider>
+    </AuthProvider>
+  );
 }

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { getConversations, ApiError } from "@/lib/api";
+import { useUnread } from "@/context/UnreadContext";
 import type { Conversation } from "@/lib/types";
 
 interface ConversationListProps {
@@ -30,6 +31,7 @@ export function ConversationList({
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { counts } = useUnread();
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -47,8 +49,33 @@ export function ConversationList({
     }
   }, [token, currentUserId]);
 
+  // Initial load
   useEffect(() => {
     load();
+  }, [load]);
+
+  // ── Auto-refresh on CustomEvent ──────────────────────────────────────────────
+  useEffect(() => {
+    const handler = () => {
+      load();
+    };
+    window.addEventListener("silentkey:conversation-updated", handler);
+    return () => window.removeEventListener("silentkey:conversation-updated", handler);
+  }, [load]);
+
+  // ── Auto-refresh on tab focus / visibility change ─────────────────────────────
+  useEffect(() => {
+    const handler = () => {
+      if (document.visibilityState === "visible") {
+        load();
+      }
+    };
+    document.addEventListener("visibilitychange", handler);
+    window.addEventListener("focus", handler);
+    return () => {
+      document.removeEventListener("visibilitychange", handler);
+      window.removeEventListener("focus", handler);
+    };
   }, [load]);
 
   return (
@@ -95,36 +122,53 @@ export function ConversationList({
       )}
 
       {/* Conversation rows */}
-      {conversations.map((c) => (
-        <button
-          key={c.user_id}
-          onClick={() => onSelectConversation(c)}
-          className="flex items-center gap-3 px-4 py-3 hover:bg-surface-hover transition-colors text-left group"
-        >
-          {/* Avatar */}
-          <div className="w-9 h-9 rounded-full bg-primary/15 border border-primary/20 flex items-center justify-center text-primary font-semibold text-sm shrink-0 group-hover:border-primary/40 transition-colors">
-            {c.display_name.charAt(0).toUpperCase()}
-          </div>
+      {conversations.map((c) => {
+        const unread = counts[c.user_id] ?? 0;
 
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-sm font-medium text-text truncate">
-                {c.display_name}
-              </span>
-              <span className="text-[10px] text-text-subtle shrink-0">
-                {formatRelativeTime(c.last_message_at)}
+        return (
+          <button
+            key={c.user_id}
+            onClick={() => onSelectConversation(c)}
+            className="flex items-center gap-3 px-4 py-3 hover:bg-surface-hover transition-colors text-left group"
+          >
+            {/* Avatar */}
+            <div className="relative shrink-0">
+              <div className="w-9 h-9 rounded-full bg-primary/15 border border-primary/20 flex items-center justify-center text-primary font-semibold text-sm group-hover:border-primary/40 transition-colors">
+                {c.display_name.charAt(0).toUpperCase()}
+              </div>
+              {/* Unread badge */}
+              {unread > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] rounded-full bg-primary text-background text-[10px] font-bold flex items-center justify-center px-1 shadow-md shadow-primary/30">
+                  {unread > 9 ? "9+" : unread}
+                </span>
+              )}
+            </div>
+
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <span className={`text-sm truncate ${unread > 0 ? "font-bold text-text" : "font-medium text-text"}`}>
+                  {c.display_name}
+                </span>
+                <span className="text-[10px] text-text-subtle shrink-0">
+                  {formatRelativeTime(c.last_message_at)}
+                </span>
+              </div>
+              <span className="text-xs text-text-muted flex items-center gap-1">
+                <svg viewBox="0 0 16 16" fill="none" className="w-3 h-3 shrink-0" aria-hidden="true">
+                  <rect x="3" y="7" width="10" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
+                  <path d="M5.5 7V5a2.5 2.5 0 015 0v2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                </svg>
+                Encrypted thread
               </span>
             </div>
-            <span className="text-xs text-text-muted flex items-center gap-1">
-              <svg viewBox="0 0 16 16" fill="none" className="w-3 h-3 shrink-0" aria-hidden="true">
-                <rect x="3" y="7" width="10" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
-                <path d="M5.5 7V5a2.5 2.5 0 015 0v2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-              </svg>
-              Encrypted thread
-            </span>
-          </div>
-        </button>
-      ))}
+
+            {/* Unread indicator dot for subtle emphasis */}
+            {unread > 0 && (
+              <span className="w-2 h-2 rounded-full bg-primary shrink-0 animate-pulse" aria-hidden="true" />
+            )}
+          </button>
+        );
+      })}
     </div>
   );
 }

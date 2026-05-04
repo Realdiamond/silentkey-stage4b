@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
+import { useUnread, dispatchConversationUpdated, dispatchConversationOpened } from "@/context/UnreadContext";
 import { getMessages, getUserPublicKey, sendMessageFallback, ApiError } from "@/lib/api";
 import { encryptMessageForRecipient, decryptMessagePayload } from "@/lib/crypto";
 import { useWhisperSocket } from "@/hooks/useWhisperSocket";
@@ -57,6 +58,7 @@ function ChatContent() {
     logout,
     refreshSession,
   } = useAuth();
+  const { increment: incrementUnread, clear: clearUnread } = useUnread();
 
   const recipientUserId = params.userId ?? "";
   const displayName = searchParams.get("name") ?? "Unknown User";
@@ -76,6 +78,14 @@ function ChatContent() {
   useEffect(() => {
     if (!isLoading && !isAuthenticated) router.push("/login");
   }, [isAuthenticated, isLoading, router]);
+
+  // ── Clear unread for this chat on mount ──────────────────────────────────────
+  useEffect(() => {
+    if (recipientUserId) {
+      clearUnread(recipientUserId);
+      dispatchConversationOpened(recipientUserId);
+    }
+  }, [recipientUserId, clearUnread]);
 
   // ── Decrypt a single server Message ─────────────────────────────────────────
   const decryptOne = useCallback(
@@ -127,43 +137,33 @@ function ChatContent() {
   // ── WS incoming message handler ──────────────────────────────────────────────
   const handleMessageReceive = useCallback(
     async (event: MessageReceiveEvent) => {
-      console.log("[SilentKey WS] received message.receive");
+      // Always notify the conversation list that something changed
+      dispatchConversationUpdated();
 
-      // Accept any message involving the current chat partner
-      const isForThisConversation =
-        event.from_user_id === recipientUserId ||
-        event.to_user_id === recipientUserId ||
-        event.from_user_id === user?.id ||
-        event.to_user_id === user?.id;
-
-      if (!isForThisConversation) return;
-
-      // Ignore echoes of own outgoing messages that were already added optimistically
-      // We let the REST response handle own-message display; WS echoes are for recipients.
+      // Ignore echoes of own outgoing messages
       if (event.from_user_id === user?.id) {
-        // Remove matching optimistic message if present, real id has arrived
-        setMessages((prev) => {
-          // Check if server message is already in state
-          if (prev.some((m) => m.id === event.id)) return prev;
-          // Otherwise leave as-is (the optimistic message will remain until reload)
-          return prev;
-        });
         return;
       }
 
-      const msgShape: Message = {
-        id: event.id,
-        from_user_id: event.from_user_id,
-        to_user_id: event.to_user_id,
-        payload: event.payload,
-        delivered: event.delivered ?? false,
-        created_at: event.created_at,
-      };
+      // Message is from the current chat partner → append to thread
+      if (event.from_user_id === recipientUserId) {
+        const msgShape: Message = {
+          id: event.id,
+          from_user_id: event.from_user_id,
+          to_user_id: event.to_user_id,
+          payload: event.payload,
+          delivered: event.delivered ?? false,
+          created_at: event.created_at,
+        };
+        const decrypted = await decryptOne(msgShape);
+        appendIfNew(decrypted);
+        return;
+      }
 
-      const decrypted = await decryptOne(msgShape);
-      appendIfNew(decrypted);
+      // Message is from a DIFFERENT user → increment their unread badge
+      incrementUnread(event.from_user_id);
     },
-    [recipientUserId, user?.id, decryptOne, appendIfNew]
+    [recipientUserId, user?.id, decryptOne, appendIfNew, incrementUnread]
   );
 
   // ── Presence ─────────────────────────────────────────────────────────────────
@@ -289,6 +289,7 @@ function ChatContent() {
             };
             const decryptedOptimistic = await decryptOne(optimisticMsg, true);
             appendIfNew(decryptedOptimistic);
+            dispatchConversationUpdated();
             return; // ✓ done via WS
           }
 
@@ -306,6 +307,7 @@ function ChatContent() {
 
         const decryptedSent = await decryptOne(sentMsg);
         appendIfNew(decryptedSent);
+        dispatchConversationUpdated();
       } finally {
         setIsSending(false);
       }
