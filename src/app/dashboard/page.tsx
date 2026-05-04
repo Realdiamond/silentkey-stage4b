@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { ConversationList } from "@/components/ConversationList";
@@ -22,12 +22,28 @@ export default function DashboardPage() {
     logout,
   } = useAuth();
 
+  /**
+   * On mobile the sidebar slides in as a drawer.
+   * On ≥ md it is always visible (controlled only by CSS).
+   */
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
   // Guard: unauthenticated → login
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
       router.push("/login");
     }
   }, [isAuthenticated, isLoading, router]);
+
+  // Close drawer when navigating away (resize to desktop, etc.)
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 768px)");
+    const handler = (e: MediaQueryListEvent) => {
+      if (e.matches) setSidebarOpen(false);
+    };
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
 
   const handleSignOut = async () => {
     await logout();
@@ -39,16 +55,18 @@ export default function DashboardPage() {
       name: u.display_name,
       username: u.username,
     });
+    setSidebarOpen(false);
     router.push(`/chat/${encodeURIComponent(u.id)}?${params.toString()}`);
   };
 
-  const handleSelectConversation = (c: Conversation) => {
+  const handleSelectConversation = useCallback((c: Conversation) => {
     const params = new URLSearchParams({
       name: c.display_name,
       username: c.username,
     });
+    setSidebarOpen(false);
     router.push(`/chat/${encodeURIComponent(c.user_id)}?${params.toString()}`);
-  };
+  }, [router]);
 
   // ── Loading splash ───────────────────────────────────────────────────────────
   if (isLoading || !user) {
@@ -67,7 +85,6 @@ export default function DashboardPage() {
     return (
       <div className="min-h-screen bg-background flex flex-col items-center justify-center px-4">
         <div className="w-full max-w-md bg-surface border border-border rounded-2xl p-8 flex flex-col gap-5 shadow-xl shadow-black/30">
-          {/* Icon */}
           <div className="w-14 h-14 rounded-xl bg-warning/10 border border-warning/25 flex items-center justify-center">
             <svg viewBox="0 0 24 24" fill="none" className="w-7 h-7 text-warning" aria-hidden="true">
               <rect x="5" y="11" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="1.5" />
@@ -104,12 +121,36 @@ export default function DashboardPage() {
   // ── Full authenticated dashboard ─────────────────────────────────────────────
   return (
     <div className="flex flex-col h-screen bg-background overflow-hidden">
-      <DashboardHeader onSignOut={handleSignOut} />
+      <DashboardHeader
+        onSignOut={handleSignOut}
+        onMenuClick={() => setSidebarOpen((v) => !v)}
+      />
 
-      <div className="flex flex-1 overflow-hidden">
-        {/* ── Sidebar ────────────────────────────────────────────────────────── */}
+      <div className="flex flex-1 overflow-hidden relative">
+
+        {/* ── Mobile backdrop ──────────────────────────────────────────────── */}
+        {sidebarOpen && (
+          <div
+            className="fixed inset-0 z-20 bg-black/50 md:hidden"
+            aria-hidden="true"
+            onClick={() => setSidebarOpen(false)}
+          />
+        )}
+
+        {/* ── Sidebar ──────────────────────────────────────────────────────── */}
         <aside
-          className="w-72 shrink-0 flex flex-col border-r border-border bg-surface overflow-y-auto"
+          className={[
+            // Base: full-height, fixed on mobile so it slides over content
+            "fixed md:relative inset-y-0 left-0 z-30",
+            // Width: full on mobile, fixed 288px on md+
+            "w-72 shrink-0",
+            // Height fills the content area below the header on desktop
+            "h-full",
+            "flex flex-col border-r border-border bg-surface overflow-y-auto",
+            // Slide animation on mobile
+            "transition-transform duration-300 ease-in-out",
+            sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0",
+          ].join(" ")}
           aria-label="Conversations"
         >
           {/* User identity */}
@@ -121,6 +162,16 @@ export default function DashboardPage() {
               <p className="text-sm font-semibold text-text truncate">{user.display_name}</p>
               <p className="text-xs text-text-muted truncate">@{user.username}</p>
             </div>
+            {/* Close button — mobile only */}
+            <button
+              className="md:hidden flex items-center justify-center w-7 h-7 rounded-lg hover:bg-surface-hover text-text-muted hover:text-text transition-colors shrink-0"
+              onClick={() => setSidebarOpen(false)}
+              aria-label="Close menu"
+            >
+              <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true">
+                <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </button>
           </div>
 
           {/* Private key status */}
@@ -148,10 +199,11 @@ export default function DashboardPage() {
           </div>
         </aside>
 
-        {/* ── Main panel ─────────────────────────────────────────────────────── */}
+        {/* ── Main panel ───────────────────────────────────────────────────── */}
         <main className="flex-1 flex flex-col overflow-hidden" id="main-content">
           <EmptyChatState />
         </main>
+
       </div>
     </div>
   );
