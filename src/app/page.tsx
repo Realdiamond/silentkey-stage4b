@@ -74,30 +74,21 @@ function LogoMark({ className = "" }: { className?: string }) {
 function FlowStep({
   label,
   sub,
-  first = false,
+  step,
 }: {
   label: string;
   sub: string;
-  first?: boolean;
+  step: number;
 }) {
   return (
-    <div className="flex items-center gap-3">
-      {!first && (
-        <div className="hidden sm:flex items-center gap-1 text-text-subtle" aria-hidden="true">
-          <svg viewBox="0 0 24 6" className="w-8 h-2 fill-none">
-            <path d="M0 3h20" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3 2" />
-          </svg>
-          <svg viewBox="0 0 8 12" className="w-2 h-3 fill-none">
-            <path d="M1 1l6 5-6 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </div>
-      )}
-      <div className="flex flex-col items-center gap-1 text-center">
-        <div className="px-3 py-1.5 rounded-lg bg-surface-elevated border border-border text-xs font-mono text-primary font-semibold whitespace-nowrap">
-          {label}
-        </div>
-        <span className="text-[10px] text-text-subtle">{sub}</span>
+    <div className="flex flex-col items-center gap-2 text-center">
+      <span className="w-5 h-5 rounded-full bg-primary/20 border border-primary/40 text-primary text-[10px] font-bold flex items-center justify-center">
+        {step}
+      </span>
+      <div className="px-3 py-2 rounded-lg bg-surface-elevated border border-border text-xs font-mono text-primary font-semibold whitespace-nowrap">
+        {label}
       </div>
+      <span className="text-[10px] text-text-subtle leading-snug max-w-[90px]">{sub}</span>
     </div>
   );
 }
@@ -155,18 +146,18 @@ export default function HomePage() {
           </Link>
 
           {/* Nav actions */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <Link
               href="/login"
               id="nav-signin"
-              className="px-4 py-2 text-sm font-medium text-text-muted hover:text-text transition-colors"
+              className="px-3 py-2 text-sm font-medium text-text-muted hover:text-text transition-colors whitespace-nowrap"
             >
               Sign In
             </Link>
             <Link
               href="/register"
               id="nav-create-account"
-              className="px-4 py-2 rounded-xl text-sm font-semibold bg-primary text-background hover:bg-primary-dark transition-all duration-200 shadow-lg shadow-primary/20 active:scale-95"
+              className="px-3 py-2 sm:px-4 rounded-xl text-xs sm:text-sm font-semibold bg-primary text-background hover:bg-primary-dark transition-all duration-200 shadow-lg shadow-primary/20 active:scale-95 whitespace-nowrap"
             >
               Create Account
             </Link>
@@ -256,17 +247,17 @@ export default function HomePage() {
             </p>
           </div>
 
-          {/* Flow diagram */}
+          {/* Flow diagram — 2-col grid on mobile, 4-col row on sm+ */}
           <div
-            className="w-full overflow-x-auto"
+            className="w-full"
             role="img"
             aria-label="Encryption flow: Plaintext to AES-GCM encryption to RSA-OAEP key wrapping to Ciphertext stored on server"
           >
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-4 sm:gap-2 min-w-max mx-auto px-4">
-              <FlowStep first label="Plaintext" sub="Your message" />
-              <FlowStep label="AES-GCM" sub="Symmetric encryption" />
-              <FlowStep label="RSA-OAEP" sub="Key wrapping" />
-              <FlowStep label="Ciphertext" sub="Stored on server" />
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 sm:gap-4 max-w-xl sm:max-w-none mx-auto">
+              <FlowStep step={1} label="Plaintext" sub="Your message" />
+              <FlowStep step={2} label="AES-GCM" sub="Symmetric encryption" />
+              <FlowStep step={3} label="RSA-OAEP" sub="Key wrapping" />
+              <FlowStep step={4} label="Ciphertext" sub="Stored on server" />
             </div>
           </div>
 
