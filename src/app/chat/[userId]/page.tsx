@@ -55,6 +55,7 @@ function ChatContent() {
     isCryptoReady,
     isLoading,
     logout,
+    refreshSession,
   } = useAuth();
 
   const recipientUserId = params.userId ?? "";
@@ -175,6 +176,15 @@ function ChatContent() {
     [recipientUserId]
   );
 
+  // ── Token lifecycle callbacks for WebSocket ──────────────────────────────────
+  const handleTokenExpired = useCallback(async (): Promise<string | null> => {
+    return refreshSession();
+  }, [refreshSession]);
+
+  const handleTokenInvalid = useCallback(() => {
+    router.push("/login");
+  }, [router]);
+
   // ── WebSocket ────────────────────────────────────────────────────────────────
   const { status: socketStatus, isOpen: wsIsOpen, sendJson, reconnect } = useWhisperSocket({
     accessToken,
@@ -182,6 +192,8 @@ function ChatContent() {
     onMessageReceive: handleMessageReceive,
     onUserOnline: handleUserOnline,
     onUserOffline: handleUserOffline,
+    onTokenExpired: handleTokenExpired,
+    onTokenInvalid: handleTokenInvalid,
   });
 
   // ── Load history ─────────────────────────────────────────────────────────────

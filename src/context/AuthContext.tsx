@@ -12,7 +12,7 @@ import {
   createRegistrationKeyBundle,
   restorePrivateKeyFromPassword,
 } from "@/lib/crypto";
-import { registerUser, loginUser, logoutUser, ApiError } from "@/lib/api";
+import { registerUser, loginUser, logoutUser, refreshAccessToken, ApiError } from "@/lib/api";
 import {
   saveAuthSession,
   loadAuthSession,
@@ -41,6 +41,8 @@ interface AuthContextValue {
   ): Promise<boolean>;
   login(username: string, password: string): Promise<boolean>;
   logout(): Promise<void>;
+  /** Silently refresh the access token. Returns the new token, or null on failure. */
+  refreshSession(): Promise<string | null>;
   clearError(): void;
 }
 
@@ -186,6 +188,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [accessToken, refreshToken]);
 
+  /**
+   * Silently refresh the access token using the stored refresh token.
+   * Returns the new access token on success, or null on failure.
+   * On failure the session is NOT cleared — the caller decides whether to redirect.
+   */
+  const refreshSession = useCallback(async (): Promise<string | null> => {
+    if (!refreshToken || !user) return null;
+    try {
+      const res = await refreshAccessToken(refreshToken);
+      const newToken = res.access_token;
+      setAccessToken(newToken);
+      // Update sessionStorage with the new access token
+      saveAuthSession({ accessToken: newToken, refreshToken, user });
+      return newToken;
+    } catch {
+      // Refresh token is invalid/expired — caller should redirect to login
+      return null;
+    }
+  }, [refreshToken, user]);
+
   const clearError = useCallback(() => setAuthError(null), []);
 
   return (
@@ -202,6 +224,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         register,
         login,
         logout,
+        refreshSession,
         clearError,
       }}
     >

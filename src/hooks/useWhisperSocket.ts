@@ -13,6 +13,13 @@ import {
 
 export type SocketStatus = "idle" | "connecting" | "open" | "closed" | "error";
 
+/** WhisperBox custom WebSocket close codes (see API guide). */
+const WS_CLOSE_TOKEN_EXPIRED = 4001;
+const WS_CLOSE_TOKEN_INVALID = 4003;
+
+/** Proactive refresh: fire 60 s before the 15-minute access-token expiry. */
+const PROACTIVE_REFRESH_MS = (15 * 60 - 60) * 1000; // 14 minutes
+
 interface UseWhisperSocketOptions {
   accessToken: string | null;
   /** Hook only opens the socket when this is true. */
@@ -21,6 +28,16 @@ interface UseWhisperSocketOptions {
   onUserOnline?: (userId: string) => void;
   onUserOffline?: (userId: string) => void;
   onSocketError?: (message: string) => void;
+  /**
+   * Called when the server closes with 4001 (token expired).
+   * Should call refreshSession() and return the new token, or null if refresh failed.
+   */
+  onTokenExpired?: () => Promise<string | null>;
+  /**
+   * Called when the server closes with 4003 (token invalid/tampered).
+   * Should redirect the user to /login immediately.
+   */
+  onTokenInvalid?: () => void;
 }
 
 interface UseWhisperSocketReturn {
@@ -38,15 +55,13 @@ interface UseWhisperSocketReturn {
 /**
  * Manages a single WhisperBox WebSocket connection.
  *
- * Key reliability fixes:
- * - Uses a "connection generation" counter (connGen) so that any callback
- *   attached to a stale/cancelled socket cannot mutate the current status.
- *   This is the standard fix for React Strict Mode double-mount teardown.
- * - Cleanup nulls all handlers *before* calling .close() so the onclose
- *   callback of the old socket does not fire "closed" after a reconnect.
- * - `sendJson` checks `ws.readyState === WebSocket.OPEN` directly on the
- *   live socket ref — status state is eventually consistent, the ref is not.
- * - Does NOT auto-reconnect in a loop; `reconnect()` is manual.
+ * Reliability features:
+ * - Connection generation counter prevents stale socket handlers.
+ * - Handles close code 4001 (expired) → auto-refresh + reconnect.
+ * - Handles close code 4003 (invalid) → immediate redirect to login.
+ * - Proactive refresh timer fires at the 14-minute mark to prevent 4001.
+ * - sendJson checks ws.readyState directly (synchronous, not state).
+ * - Does NOT auto-reconnect in a loop; `reconnect()` is manual for other codes.
  */
 export function useWhisperSocket({
   accessToken,
@@ -55,30 +70,38 @@ export function useWhisperSocket({
   onUserOnline,
   onUserOffline,
   onSocketError,
+  onTokenExpired,
+  onTokenInvalid,
 }: UseWhisperSocketOptions): UseWhisperSocketReturn {
   const [status, setStatus] = useState<SocketStatus>("idle");
   const wsRef = useRef<WebSocket | null>(null);
-
-  /**
-   * Monotonically-increasing generation counter.
-   * Each new connection gets its own generation snapshot.
-   * Any event handler whose captured `gen` no longer matches
-   * the ref's value is from a stale socket and is discarded.
-   */
   const connGen = useRef(0);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Keep callbacks in refs so they can be updated without re-creating the socket
+  // Callback refs — keeps the socket stable when callbacks change
   const onMessageReceiveRef = useRef(onMessageReceive);
   const onUserOnlineRef     = useRef(onUserOnline);
   const onUserOfflineRef    = useRef(onUserOffline);
   const onSocketErrorRef    = useRef(onSocketError);
+  const onTokenExpiredRef   = useRef(onTokenExpired);
+  const onTokenInvalidRef   = useRef(onTokenInvalid);
 
   useEffect(() => { onMessageReceiveRef.current = onMessageReceive; }, [onMessageReceive]);
   useEffect(() => { onUserOnlineRef.current     = onUserOnline;     }, [onUserOnline]);
   useEffect(() => { onUserOfflineRef.current    = onUserOffline;    }, [onUserOffline]);
   useEffect(() => { onSocketErrorRef.current    = onSocketError;    }, [onSocketError]);
+  useEffect(() => { onTokenExpiredRef.current   = onTokenExpired;   }, [onTokenExpired]);
+  useEffect(() => { onTokenInvalidRef.current   = onTokenInvalid;   }, [onTokenInvalid]);
 
-  // ── Tear down a socket without triggering stale state updates ────────────────
+  // ── Helpers ──────────────────────────────────────────────────────────────────
+
+  const clearRefreshTimer = useCallback(() => {
+    if (refreshTimerRef.current) {
+      clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = null;
+    }
+  }, []);
+
   const teardown = useCallback((ws: WebSocket) => {
     ws.onopen    = null;
     ws.onclose   = null;
@@ -92,53 +115,95 @@ export function useWhisperSocket({
     }
   }, []);
 
-  // ── Open a new connection ────────────────────────────────────────────────────
-  const connect = useCallback(() => {
-    if (!enabled || !accessToken) return;
+  // ── Connect ──────────────────────────────────────────────────────────────────
 
-    // Tear down any existing socket first so we never have two open
+  const connect = useCallback((tokenOverride?: string) => {
+    const token = tokenOverride ?? accessToken;
+    if (!enabled || !token) return;
+
+    // Tear down existing socket
     if (wsRef.current) {
       teardown(wsRef.current);
       wsRef.current = null;
     }
+    clearRefreshTimer();
 
-    // Increment generation — all prior socket handlers are now stale
     const gen = ++connGen.current;
-
-    const ws = createWhisperSocket(accessToken);
+    const ws = createWhisperSocket(token);
     if (!ws) return;
 
     wsRef.current = ws;
     setStatus("connecting");
 
     ws.onopen = () => {
-      if (connGen.current !== gen) return; // stale — discard
+      if (connGen.current !== gen) return;
       setStatus("open");
+
+      // Start proactive refresh timer — fires at 14 min to refresh
+      // the access token BEFORE the server drops us with 4001.
+      refreshTimerRef.current = setTimeout(async () => {
+        if (connGen.current !== gen) return;
+        console.log("[SilentKey WS] proactive token refresh at 14-min mark");
+        const newToken = await onTokenExpiredRef.current?.();
+        if (newToken && connGen.current === gen) {
+          // Reconnect with the fresh token
+          connGen.current += 1;
+          teardown(ws);
+          wsRef.current = null;
+          connect(newToken);
+        }
+      }, PROACTIVE_REFRESH_MS);
     };
 
-    ws.onclose = (ev) => {
-      if (connGen.current !== gen) return; // stale — discard
-      // Treat abnormal closure codes as errors for clearer UI messaging
+    ws.onclose = async (ev) => {
+      if (connGen.current !== gen) return;
+      clearRefreshTimer();
+      wsRef.current = null;
+
+      // ── Handle WhisperBox custom close codes ──
+      if (ev.code === WS_CLOSE_TOKEN_EXPIRED) {
+        console.log("[SilentKey WS] close 4001 — token expired, attempting refresh");
+        setStatus("connecting"); // show "Connecting…" while refreshing
+
+        const newToken = await onTokenExpiredRef.current?.();
+        if (newToken && connGen.current === gen) {
+          // Success — reconnect with the refreshed token
+          connect(newToken);
+          return;
+        }
+
+        // Refresh failed — treat as fatal
+        console.warn("[SilentKey WS] refresh failed after 4001 — redirecting to login");
+        onTokenInvalidRef.current?.();
+        setStatus("error");
+        return;
+      }
+
+      if (ev.code === WS_CLOSE_TOKEN_INVALID) {
+        console.warn("[SilentKey WS] close 4003 — token invalid, redirecting to login");
+        onTokenInvalidRef.current?.();
+        setStatus("error");
+        return;
+      }
+
+      // Normal / abnormal close
       const wasAbnormal = ev.code !== 1000 && ev.code !== 1001;
       setStatus(wasAbnormal ? "error" : "closed");
-      wsRef.current = null;
     };
 
     ws.onerror = () => {
-      if (connGen.current !== gen) return; // stale — discard
-      // onerror always precedes onclose; onclose will set final status
-      // We set "error" here too so the UI reacts immediately
+      if (connGen.current !== gen) return;
       setStatus("error");
     };
 
     ws.onmessage = (event: MessageEvent<unknown>) => {
-      if (connGen.current !== gen) return; // stale — discard
+      if (connGen.current !== gen) return;
 
       let parsed: unknown;
       try {
         parsed = JSON.parse(typeof event.data === "string" ? event.data : "");
       } catch {
-        return; // Non-JSON frame — ignore silently
+        return;
       }
 
       if (isMessageReceiveEvent(parsed)) {
@@ -162,41 +227,33 @@ export function useWhisperSocket({
         return;
       }
 
-      // Unknown event — ignore safely
+      // Unknown event — ignore
     };
-  }, [enabled, accessToken, teardown]);
+  }, [enabled, accessToken, teardown, clearRefreshTimer]);
 
   // ── Effect: open/close based on enabled + accessToken ───────────────────────
+
   useEffect(() => {
     if (enabled && accessToken) {
       connect();
     }
 
     return () => {
-      // Invalidate all handlers for the current connection generation.
-      // This must happen BEFORE teardown() so the onclose handler
-      // (which checks connGen) does not fire a "closed" state update
-      // that would interfere with the next connect() call.
       connGen.current += 1;
-
+      clearRefreshTimer();
       if (wsRef.current) {
         teardown(wsRef.current);
         wsRef.current = null;
       }
       setStatus("idle");
     };
-    // connect is stable (accessToken/enabled are its deps, which are also listed here)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, accessToken]);
 
-  // ── sendJson — checks the live socket, not React state ──────────────────────
+  // ── sendJson ────────────────────────────────────────────────────────────────
+
   const sendJson = useCallback((payload: unknown): boolean => {
-    // Deliberately use wsRef.current.readyState instead of `status` state
-    // because React state is asynchronous; the ref is synchronous.
-    if (
-      !wsRef.current ||
-      wsRef.current.readyState !== WebSocket.OPEN
-    ) {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       return false;
     }
     try {
@@ -208,26 +265,29 @@ export function useWhisperSocket({
   }, []);
 
   // ── Manual reconnect ─────────────────────────────────────────────────────────
+
   const reconnect = useCallback(() => {
     if (!enabled || !accessToken) return;
-    // Invalidate the current generation so its onclose cannot fire after reconnect
     connGen.current += 1;
+    clearRefreshTimer();
     if (wsRef.current) {
       teardown(wsRef.current);
       wsRef.current = null;
     }
     connect();
-  }, [enabled, accessToken, connect, teardown]);
+  }, [enabled, accessToken, connect, teardown, clearRefreshTimer]);
 
   // ── Manual close ─────────────────────────────────────────────────────────────
+
   const close = useCallback(() => {
     connGen.current += 1;
+    clearRefreshTimer();
     if (wsRef.current) {
       teardown(wsRef.current);
       wsRef.current = null;
     }
     setStatus("closed");
-  }, [teardown]);
+  }, [teardown, clearRefreshTimer]);
 
   return {
     status,

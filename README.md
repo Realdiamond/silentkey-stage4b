@@ -8,7 +8,7 @@
 
 | | Link |
 |---|---|
-| 🌐 Live Demo | _Coming soon_ |
+| 🌐 Live Demo | [silentkey-stage4b.vercel.app](https://silentkey-stage4b.vercel.app/) |
 | 📦 GitHub | [github.com/Realdiamond/silentkey-stage4b](https://github.com/Realdiamond/silentkey-stage4b) |
 | 🔗 Backend | [whisperbox.koyeb.app](https://whisperbox.koyeb.app) |
 
@@ -168,6 +168,30 @@ Incoming messages via WebSocket are decrypted immediately using the in-memory pr
 
 ---
 
+## WebSocket Close Code Handling
+
+| Close Code | Meaning | SilentKey Response |
+|---|---|---|
+| `4001` | Access token expired | Auto-refresh via `POST /auth/refresh`, then reconnect with new token |
+| `4003` | Token missing or invalid | Redirect to `/login` immediately (no retry) |
+| `1000` / `1001` | Normal close | Status → "closed" |
+| Other | Abnormal close | Status → "error", REST fallback active |
+
+**Proactive refresh:** A timer fires at the 14-minute mark (60 seconds before the 15-minute token expiry) to refresh the access token and reconnect the WebSocket before the server drops the connection. This prevents any interruption in real-time delivery.
+
+```
+WS opened → start 14-min timer
+           │
+           ├─ Timer fires → refreshSession() → reconnect with new token
+           │
+           ├─ Server sends 4001 → refreshSession() → reconnect
+           │                       └─ refresh fails → redirect to /login
+           │
+           └─ Server sends 4003 → redirect to /login immediately
+```
+
+---
+
 ## Security Trade-offs & Honest Limitations
 
 | Item | Status |
@@ -191,7 +215,6 @@ Incoming messages via WebSocket are decrypted immediately using the in-memory pr
 - No push notifications when the app is not open
 - No group chat support
 - No file/attachment encryption
-- No automatic token refresh (access token expires after 15 minutes)
 - No unread message badges across conversations
 - No typing indicators
 - No message pagination (loads last 50 messages only)
@@ -293,6 +316,8 @@ src/
 - [x] WebSocket real-time messaging (`/ws?token=`)
 - [x] Per-message decryption failure handling (safe fallback, no crash)
 - [x] WebSocket reliability (generation-safe hook, React Strict Mode safe)
+- [x] WebSocket close code handling (4001 auto-refresh, 4003 redirect)
+- [x] Proactive token refresh at 14-minute mark
 - [x] TypeScript — zero `any`, `npx tsc --noEmit` passes
 - [x] Full README with security explanation included
 
