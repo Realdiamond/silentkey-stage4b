@@ -6,7 +6,6 @@ import { useAuth } from "@/context/AuthContext";
 import { useUnread } from "@/context/UnreadContext";
 import { ConversationList } from "@/components/ConversationList";
 import { UserSearch } from "@/components/UserSearch";
-import { DashboardHeader } from "@/components/DashboardHeader";
 import { EmptyChatState } from "@/components/EmptyChatState";
 import { Button } from "@/components/ui/Button";
 import type { Conversation } from "@/lib/types";
@@ -24,28 +23,12 @@ export default function DashboardPage() {
   } = useAuth();
   const { clear: clearUnread } = useUnread();
 
-  /**
-   * On mobile the sidebar slides in as a drawer.
-   * On ≥ md it is always visible (controlled only by CSS).
-   */
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-
   // Guard: unauthenticated → login
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
       router.push("/login");
     }
   }, [isAuthenticated, isLoading, router]);
-
-  // Close drawer when navigating away (resize to desktop, etc.)
-  useEffect(() => {
-    const mq = window.matchMedia("(min-width: 768px)");
-    const handler = (e: MediaQueryListEvent) => {
-      if (e.matches) setSidebarOpen(false);
-    };
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, []);
 
   const handleSignOut = async () => {
     await logout();
@@ -57,8 +40,7 @@ export default function DashboardPage() {
       name: u.display_name,
       username: u.username,
     });
-    clearUnread(u.id);
-    setSidebarOpen(false);
+    clearUnread(u.id, user?.id);
     router.push(`/chat/${encodeURIComponent(u.id)}?${params.toString()}`);
   };
 
@@ -67,18 +49,17 @@ export default function DashboardPage() {
       name: c.display_name,
       username: c.username,
     });
-    clearUnread(c.user_id);
-    setSidebarOpen(false);
+    clearUnread(c.user_id, user?.id);
     router.push(`/chat/${encodeURIComponent(c.user_id)}?${params.toString()}`);
-  }, [router, clearUnread]);
+  }, [router, clearUnread, user?.id]);
 
   // ── Loading splash ───────────────────────────────────────────────────────────
   if (isLoading || !user) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
+      <div className="min-h-screen flex items-center justify-center bg-[#0B141A]">
         <div className="flex flex-col items-center gap-3">
-          <div className="w-7 h-7 rounded-full border-2 border-primary border-t-transparent animate-spin" />
-          <p className="text-sm text-text-muted">Loading session…</p>
+          <div className="w-7 h-7 rounded-full border-2 border-[#25D366] border-t-transparent animate-spin" />
+          <p className="text-sm text-[#8696A0]">Loading session…</p>
         </div>
       </div>
     );
@@ -87,10 +68,10 @@ export default function DashboardPage() {
   // ── Locked state — session restored but no private key ───────────────────────
   if (!isCryptoReady) {
     return (
-      <div className="min-h-screen bg-background flex flex-col items-center justify-center px-4">
-        <div className="w-full max-w-md bg-surface border border-border rounded-2xl p-8 flex flex-col gap-5 shadow-xl shadow-black/30">
-          <div className="w-14 h-14 rounded-xl bg-warning/10 border border-warning/25 flex items-center justify-center">
-            <svg viewBox="0 0 24 24" fill="none" className="w-7 h-7 text-warning" aria-hidden="true">
+      <div className="min-h-screen bg-[#0B141A] flex flex-col items-center justify-center px-4">
+        <div className="w-full max-w-md bg-[#111B21] border border-[#2A3942] rounded-2xl p-8 flex flex-col gap-5 shadow-xl">
+          <div className="w-14 h-14 rounded-xl bg-[#f59e0b]/10 border border-[#f59e0b]/25 flex items-center justify-center">
+            <svg viewBox="0 0 24 24" fill="none" className="w-7 h-7 text-[#f59e0b]" aria-hidden="true">
               <rect x="5" y="11" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="1.5" />
               <path d="M8 11V7a4 4 0 018 0v4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
               <circle cx="12" cy="16" r="1.5" fill="currentColor" />
@@ -98,14 +79,14 @@ export default function DashboardPage() {
           </div>
 
           <div>
-            <h1 className="text-lg font-bold text-text">Private key not loaded</h1>
-            <p className="text-sm text-text-muted mt-1 leading-relaxed">
+            <h1 className="text-lg font-bold text-[#E9EDEF]">Private key not loaded</h1>
+            <p className="text-sm text-[#8696A0] mt-1 leading-relaxed">
               Your session was restored from storage, but your private key is not available.
             </p>
           </div>
 
-          <div className="rounded-xl bg-surface-elevated border border-border px-4 py-3 text-xs text-text-muted leading-relaxed">
-            🔒 <strong className="text-text">Security notice:</strong> For your protection, SilentKey
+          <div className="rounded-xl bg-[#202C33] border border-[#2A3942] px-4 py-3 text-xs text-[#8696A0] leading-relaxed">
+            🔒 <strong className="text-[#E9EDEF]">Security notice:</strong> For your protection, SilentKey
             never stores your private key. To decrypt messages, you must sign in again with your password.
           </div>
 
@@ -124,91 +105,71 @@ export default function DashboardPage() {
 
   // ── Full authenticated dashboard ─────────────────────────────────────────────
   return (
-    <div className="flex flex-col h-screen bg-background overflow-hidden">
-      <DashboardHeader
-        onSignOut={handleSignOut}
-        onMenuClick={() => setSidebarOpen((v) => !v)}
-      />
-
-      <div className="flex flex-1 overflow-hidden relative">
-
-        {/* ── Mobile backdrop ──────────────────────────────────────────────── */}
-        {sidebarOpen && (
-          <div
-            className="fixed inset-0 z-20 bg-black/50 md:hidden"
-            aria-hidden="true"
-            onClick={() => setSidebarOpen(false)}
-          />
-        )}
-
-        {/* ── Sidebar ──────────────────────────────────────────────────────── */}
-        <aside
-          className={[
-            // Base: full-height, fixed on mobile so it slides over content
-            "fixed md:relative inset-y-0 left-0 z-30",
-            // Width: full on mobile, fixed 288px on md+
-            "w-72 shrink-0",
-            // Height fills the content area below the header on desktop
-            "h-full",
-            "flex flex-col border-r border-border bg-surface overflow-y-auto",
-            // Slide animation on mobile
-            "transition-transform duration-300 ease-in-out",
-            sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0",
-          ].join(" ")}
-          aria-label="Conversations"
-        >
-          {/* User identity */}
-          <div className="flex items-center gap-3 px-4 py-4 border-b border-border">
-            <div className="w-9 h-9 rounded-full bg-primary/15 border border-primary/25 flex items-center justify-center text-primary font-bold text-sm shrink-0">
+    <div className="flex flex-col h-screen bg-[#0B141A] overflow-hidden md:flex-row">
+      {/* ── Sidebar (WhatsApp left panel style) ─────────────────────────── */}
+      <aside
+        className={[
+          "relative",
+          "w-full md:w-[380px] shrink-0",
+          "h-full",
+          "flex flex-col border-r border-[#2A3942] bg-[#111B21]",
+          "z-30",
+        ].join(" ")}
+        aria-label="Conversations"
+      >
+        {/* Sidebar Header (User Profile Bar) */}
+        <div className="flex items-center justify-between px-4 py-3 bg-[#202C33] border-b border-[#2A3942] shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-[#2A3942] flex items-center justify-center text-[#E9EDEF] font-semibold text-base shrink-0 select-none">
               {user.display_name.charAt(0).toUpperCase()}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-text truncate">{user.display_name}</p>
-              <p className="text-xs text-text-muted truncate">@{user.username}</p>
+              <p className="text-[15px] font-semibold text-[#E9EDEF] truncate leading-tight">
+                {user.display_name}
+              </p>
+              <div className="flex items-center gap-1.5 mt-px">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#25D366] shrink-0" aria-hidden="true" />
+                <span className="text-[11px] text-[#25D366] font-medium truncate">Key ready</span>
+              </div>
             </div>
-            {/* Close button — mobile only */}
+          </div>
+
+          <div className="flex items-center gap-2">
             <button
-              className="md:hidden flex items-center justify-center w-7 h-7 rounded-lg hover:bg-surface-hover text-text-muted hover:text-text transition-colors shrink-0"
-              onClick={() => setSidebarOpen(false)}
-              aria-label="Close menu"
+              onClick={handleSignOut}
+              className="p-2 text-[#8696A0] hover:text-[#E9EDEF] hover:bg-[#2A3942]/50 rounded-full transition-colors"
+              title="Sign out"
             >
-              <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true">
-                <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+                <path d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15M12 9l-3 3m0 0l3 3m-3-3h12.75" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </button>
           </div>
+        </div>
 
-          {/* Private key status */}
-          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border">
-            <span className="w-2 h-2 rounded-full bg-success shrink-0" aria-hidden="true" />
-            <span className="text-xs text-success font-medium">Private key ready to decrypt</span>
-          </div>
+        {/* Search */}
+        <div className="border-b border-[#2A3942] py-1 bg-[#111B21]">
+          <UserSearch
+            token={accessToken!}
+            currentUserId={user.id}
+            onSelectUser={handleSelectUser}
+          />
+        </div>
 
-          {/* User search */}
-          <div className="border-b border-border py-1">
-            <UserSearch
-              token={accessToken!}
-              currentUserId={user.id}
-              onSelectUser={handleSelectUser}
-            />
-          </div>
+        {/* Chat List */}
+        <div className="flex-1 overflow-y-auto bg-[#111B21]">
+          <ConversationList
+            token={accessToken!}
+            currentUserId={user.id}
+            onSelectConversation={handleSelectConversation}
+          />
+        </div>
+      </aside>
 
-          {/* Conversations */}
-          <div className="flex-1">
-            <ConversationList
-              token={accessToken!}
-              currentUserId={user.id}
-              onSelectConversation={handleSelectConversation}
-            />
-          </div>
-        </aside>
-
-        {/* ── Main panel ───────────────────────────────────────────────────── */}
-        <main className="flex-1 flex flex-col overflow-hidden" id="main-content">
-          <EmptyChatState />
-        </main>
-
-      </div>
+      {/* ── Main panel (Empty state on dashboard) ────────────────────────── */}
+      <main className="hidden md:flex flex-1 flex-col h-full overflow-hidden chat-bg" id="main-content">
+        <EmptyChatState />
+      </main>
     </div>
   );
 }

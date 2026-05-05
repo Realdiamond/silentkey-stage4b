@@ -200,6 +200,7 @@ WS opened → start 14-min timer
 | Forward secrecy | None — compromising the private key exposes all past messages |
 | Private key durability | Memory-only; lost on page refresh. User must sign in again |
 | Session tokens | `accessToken` and `refreshToken` stored in `sessionStorage` for practicality |
+| Unread status | `localStorage` is used to remember unread message timestamps because the backend explicitly refuses to track read receipts to guarantee maximum user privacy. |
 | WebSocket auth | Token passed as a URL query parameter because browsers cannot set custom headers on WebSocket connections |
 | Key verification | No key fingerprint UI — a compromised server could substitute public keys (TOFU risk) |
 | Message editing | Not supported |
@@ -321,40 +322,5 @@ src/
 - [x] TypeScript — zero `any`, `npx tsc --noEmit` passes
 - [x] Full README with security explanation included
 
----
-
-## Pre-Deployment Checklist
-
-```bash
-# 1. Verify TypeScript
-npx tsc --noEmit
-
-# 2. Verify the build compiles
-npm run build
-
-# 3. Commit everything
-git add .
-git commit -m "Phase 8: Polish and README"
-git push
-```
-
-Then deploy via Vercel (recommended — see below).
-
----
-
-## Recommended Deployment: Vercel
-
-SilentKey is a Next.js app and deploys to Vercel in one step:
-
-1. Go to [vercel.com](https://vercel.com) and sign in with GitHub
-2. Click **Add New Project** → import `Realdiamond/silentkey-stage4b`
-3. Leave all settings at defaults (Vercel auto-detects Next.js)
-4. Click **Deploy**
-
-No environment variables are required — the WhisperBox backend URL is already in `src/lib/config.ts`.
-
-> After deployment, update the **Live Demo** link at the top of this README.
-
----
 
 _Built by Realdiamond for Frontend Wizards Stage 4B._

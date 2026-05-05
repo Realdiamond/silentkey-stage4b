@@ -9,21 +9,23 @@ import {
 } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
-import { useUnread, dispatchConversationUpdated, dispatchConversationOpened } from "@/context/UnreadContext";
+import { useUnread, dispatchConversationUpdated } from "@/context/UnreadContext";
 import { getMessages, getUserPublicKey, sendMessageFallback, ApiError } from "@/lib/api";
 import { encryptMessageForRecipient, decryptMessagePayload } from "@/lib/crypto";
-import { useWhisperSocket } from "@/hooks/useWhisperSocket";
+import { useSocket } from "@/context/SocketContext";
 import { ChatHeader } from "@/components/ChatHeader";
 import { ChatComposer } from "@/components/ChatComposer";
 import { MessageBubble } from "@/components/MessageBubble";
 import { DecryptionNotice } from "@/components/DecryptionNotice";
 import { Button } from "@/components/ui/Button";
+import { ConversationList } from "@/components/ConversationList";
+import { UserSearch } from "@/components/UserSearch";
 import {
   isSameDay,
   formatDayLabel,
   type DecryptedMessage,
 } from "@/lib/message-utils";
-import type { Message } from "@/lib/types";
+import type { Message, Conversation, PublicUser } from "@/lib/types";
 import type { MessageReceiveEvent, OutgoingMessageSendEvent } from "@/lib/websocket";
 
 // ─── Spinner ──────────────────────────────────────────────────────────────────
@@ -31,7 +33,7 @@ import type { MessageReceiveEvent, OutgoingMessageSendEvent } from "@/lib/websoc
 function Spinner({ className }: { className?: string }) {
   return (
     <div
-      className={`rounded-full border-2 border-primary border-t-transparent animate-spin ${className ?? "w-6 h-6"}`}
+      className={`rounded-full border-2 border-[#25D366] border-t-transparent animate-spin ${className ?? "w-6 h-6"}`}
       aria-hidden="true"
     />
   );
@@ -39,7 +41,6 @@ function Spinner({ className }: { className?: string }) {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Unique id prefix for optimistic WS messages so we can remove them on failure. */
 const OPTIMISTIC_PREFIX = "optimistic-ws-";
 
 // ─── Chat inner ───────────────────────────────────────────────────────────────
@@ -56,15 +57,15 @@ function ChatContent() {
     isCryptoReady,
     isLoading,
     logout,
-    refreshSession,
   } = useAuth();
-  const { increment: incrementUnread, clear: clearUnread } = useUnread();
+  const { clear: clearUnread } = useUnread();
+  const { status: socketStatus, isOpen: wsIsOpen, sendJson, reconnect } = useSocket();
 
   const recipientUserId = params.userId ?? "";
   const displayName = searchParams.get("name") ?? "Unknown User";
   const username = searchParams.get("username") ?? "";
 
-  // ── State ────────────────────────────────────────────────────────────────────
+  // State
   const [messages, setMessages] = useState<DecryptedMessage[]>([]);
   const [recipientPublicKey, setRecipientPublicKey] = useState<string | null>(null);
   const [isLoadingKey, setIsLoadingKey] = useState(false);
@@ -74,20 +75,19 @@ function ChatContent() {
   const [recipientOnline, setRecipientOnline] = useState<boolean | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // ── Guard ────────────────────────────────────────────────────────────────────
+  // Guard
   useEffect(() => {
     if (!isLoading && !isAuthenticated) router.push("/login");
   }, [isAuthenticated, isLoading, router]);
 
-  // ── Clear unread for this chat on mount ──────────────────────────────────────
+  // Clear unread
   useEffect(() => {
-    if (recipientUserId) {
-      clearUnread(recipientUserId);
-      dispatchConversationOpened(recipientUserId);
+    if (recipientUserId && user?.id) {
+      clearUnread(recipientUserId, user.id);
     }
-  }, [recipientUserId, clearUnread]);
+  }, [recipientUserId, user?.id, clearUnread]);
 
-  // ── Decrypt a single server Message ─────────────────────────────────────────
+  // Decrypt
   const decryptOne = useCallback(
     async (msg: Message, pending = false): Promise<DecryptedMessage> => {
       const isOwnMessage = msg.from_user_id === user?.id;
@@ -123,10 +123,8 @@ function ChatContent() {
     [privateKey, user]
   );
 
-  // ── Append a message if not already in state (dedup by server id) ────────────
   const appendIfNew = useCallback((msg: DecryptedMessage) => {
     setMessages((prev) => {
-      // Only deduplicate against real server IDs (not optimistic prefix ones)
       if (!msg.id.startsWith(OPTIMISTIC_PREFIX) && prev.some((m) => m.id === msg.id)) {
         return prev;
       }
@@ -134,73 +132,51 @@ function ChatContent() {
     });
   }, []);
 
-  // ── WS incoming message handler ──────────────────────────────────────────────
-  const handleMessageReceive = useCallback(
-    async (event: MessageReceiveEvent) => {
-      // Always notify the conversation list that something changed
-      dispatchConversationUpdated();
+  // WS incoming
+  useEffect(() => {
+    const handler = async (e: Event) => {
+      const event = (e as CustomEvent<MessageReceiveEvent>).detail;
+      if (event.from_user_id === user?.id) return;
+      if (
+        event.from_user_id !== recipientUserId &&
+        event.to_user_id !== recipientUserId
+      ) return;
 
-      // Ignore echoes of own outgoing messages
-      if (event.from_user_id === user?.id) {
-        return;
-      }
+      const msgShape: Message = {
+        id: event.id,
+        from_user_id: event.from_user_id,
+        to_user_id: event.to_user_id,
+        payload: event.payload,
+        delivered: event.delivered ?? false,
+        created_at: event.created_at,
+      };
+      const decrypted = await decryptOne(msgShape);
+      appendIfNew(decrypted);
+    };
 
-      // Message is from the current chat partner → append to thread
-      if (event.from_user_id === recipientUserId) {
-        const msgShape: Message = {
-          id: event.id,
-          from_user_id: event.from_user_id,
-          to_user_id: event.to_user_id,
-          payload: event.payload,
-          delivered: event.delivered ?? false,
-          created_at: event.created_at,
-        };
-        const decrypted = await decryptOne(msgShape);
-        appendIfNew(decrypted);
-        return;
-      }
+    window.addEventListener("silentkey:message-received", handler);
+    return () => window.removeEventListener("silentkey:message-received", handler);
+  }, [user?.id, recipientUserId, decryptOne, appendIfNew]);
 
-      // Message is from a DIFFERENT user → increment their unread badge
-      incrementUnread(event.from_user_id);
-    },
-    [recipientUserId, user?.id, decryptOne, appendIfNew, incrementUnread]
-  );
+  // Presence
+  useEffect(() => {
+    const onOnline = (e: Event) => {
+      const { userId } = (e as CustomEvent<{ userId: string }>).detail;
+      if (userId === recipientUserId) setRecipientOnline(true);
+    };
+    const onOffline = (e: Event) => {
+      const { userId } = (e as CustomEvent<{ userId: string }>).detail;
+      if (userId === recipientUserId) setRecipientOnline(false);
+    };
+    window.addEventListener("silentkey:user-online", onOnline);
+    window.addEventListener("silentkey:user-offline", onOffline);
+    return () => {
+      window.removeEventListener("silentkey:user-online", onOnline);
+      window.removeEventListener("silentkey:user-offline", onOffline);
+    };
+  }, [recipientUserId]);
 
-  // ── Presence ─────────────────────────────────────────────────────────────────
-  const handleUserOnline = useCallback(
-    (userId: string) => { if (userId === recipientUserId) setRecipientOnline(true); },
-    [recipientUserId]
-  );
-  const handleUserOffline = useCallback(
-    (userId: string) => { if (userId === recipientUserId) setRecipientOnline(false); },
-    [recipientUserId]
-  );
-
-  // ── Token lifecycle callbacks for WebSocket ──────────────────────────────────
-  const handleTokenExpired = useCallback(async (): Promise<string | null> => {
-    return refreshSession();
-  }, [refreshSession]);
-
-  const handleTokenInvalid = useCallback(() => {
-    router.push("/login");
-  }, [router]);
-
-  const wsEnabled = Boolean(
-    isAuthenticated && isCryptoReady && accessToken && privateKey && user && recipientUserId
-  );
-
-  // ── WebSocket ────────────────────────────────────────────────────────────────
-  const { status: socketStatus, isOpen: wsIsOpen, sendJson, reconnect } = useWhisperSocket({
-    accessToken,
-    enabled: wsEnabled,
-    onMessageReceive: handleMessageReceive,
-    onUserOnline: handleUserOnline,
-    onUserOffline: handleUserOffline,
-    onTokenExpired: handleTokenExpired,
-    onTokenInvalid: handleTokenInvalid,
-  });
-
-  // ── Load history ─────────────────────────────────────────────────────────────
+  // Load history
   const loadChat = useCallback(async () => {
     if (!accessToken || !isCryptoReady || !recipientUserId) return;
 
@@ -227,7 +203,6 @@ function ChatContent() {
       const raw = await getMessages(accessToken, recipientUserId, { limit: 50 });
       const reversed = [...raw].reverse();
       const decrypted = await Promise.all(reversed.map((m) => decryptOne(m)));
-      // Replace entire list (reload scenario removes stale optimistic messages too)
       setMessages(decrypted);
     } catch (err) {
       setLoadError(
@@ -244,12 +219,12 @@ function ChatContent() {
     if (isCryptoReady && accessToken) void loadChat();
   }, [isCryptoReady, accessToken, loadChat]);
 
-  // ── Auto-scroll ──────────────────────────────────────────────────────────────
+  // Auto-scroll
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // ── Send message ─────────────────────────────────────────────────────────────
+  // Send message
   const handleSend = useCallback(
     async (plaintext: string) => {
       if (!accessToken || !privateKey || !user || !recipientPublicKey) {
@@ -259,14 +234,12 @@ function ChatContent() {
       setIsSending(true);
 
       try {
-        // 1. Encrypt on-device — plaintext never leaves the browser
         const encrypted = await encryptMessageForRecipient({
           plaintext,
           recipientPublicKeyBase64: recipientPublicKey,
           senderPublicKeyBase64: user.public_key,
         });
 
-        // 2a. WebSocket path: only if isOpen is true AND wsIsOpen confirms it
         if (wsIsOpen && socketStatus === "open") {
           const wsPayload: OutgoingMessageSendEvent = {
             event: "message.send",
@@ -276,9 +249,6 @@ function ChatContent() {
           const sent = sendJson(wsPayload);
 
           if (sent) {
-            // Add an optimistic pending message so the sender sees it immediately.
-            // Own messages via WS are shown optimistically; the real server id
-            // will arrive via message.receive (or REST reload).
             const optimisticMsg: Message = {
               id: `${OPTIMISTIC_PREFIX}${Date.now()}`,
               from_user_id: user.id,
@@ -290,16 +260,10 @@ function ChatContent() {
             const decryptedOptimistic = await decryptOne(optimisticMsg, true);
             appendIfNew(decryptedOptimistic);
             dispatchConversationUpdated();
-            return; // ✓ done via WS
+            return;
           }
-
-          // sendJson returned false (socket closed mid-send) → fall through to REST
-          console.log("[SilentKey WS] sendJson failed, falling back to REST");
         }
 
-        // 2b. REST fallback — used when:
-        //   - WS is not open (idle / connecting / closed / error)
-        //   - WS sendJson returned false
         const sentMsg = await sendMessageFallback(accessToken, {
           to: recipientUserId,
           payload: encrypted,
@@ -324,10 +288,26 @@ function ChatContent() {
     router.push("/login");
   };
 
+  const handleSelectUser = (u: PublicUser) => {
+    const params = new URLSearchParams({
+      name: u.display_name,
+      username: u.username,
+    });
+    router.push(`/chat/${encodeURIComponent(u.id)}?${params.toString()}`);
+  };
+
+  const handleSelectConversation = useCallback((c: Conversation) => {
+    const params = new URLSearchParams({
+      name: c.display_name,
+      username: c.username,
+    });
+    router.push(`/chat/${encodeURIComponent(c.user_id)}?${params.toString()}`);
+  }, [router]);
+
   // ── Loading splash ───────────────────────────────────────────────────────────
-  if (isLoading) {
+  if (isLoading || !user) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
+      <div className="min-h-screen flex items-center justify-center bg-[#0B141A]">
         <Spinner />
       </div>
     );
@@ -336,22 +316,22 @@ function ChatContent() {
   // ── Locked: no private key ───────────────────────────────────────────────────
   if (!isCryptoReady) {
     return (
-      <div className="min-h-screen bg-background flex flex-col items-center justify-center px-4">
-        <div className="w-full max-w-md bg-surface border border-border rounded-2xl p-8 flex flex-col gap-5 shadow-xl shadow-black/30">
-          <div className="w-12 h-12 rounded-xl bg-warning/10 border border-warning/25 flex items-center justify-center">
-            <svg viewBox="0 0 24 24" fill="none" className="w-6 h-6 text-warning" aria-hidden="true">
+      <div className="min-h-screen bg-[#0B141A] flex flex-col items-center justify-center px-4">
+        <div className="w-full max-w-md bg-[#111B21] border border-[#2A3942] rounded-2xl p-8 flex flex-col gap-5 shadow-xl">
+          <div className="w-12 h-12 rounded-xl bg-[#f59e0b]/10 border border-[#f59e0b]/25 flex items-center justify-center">
+            <svg viewBox="0 0 24 24" fill="none" className="w-6 h-6 text-[#f59e0b]" aria-hidden="true">
               <rect x="5" y="11" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="1.5" />
               <path d="M8 11V7a4 4 0 018 0v4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
           </div>
           <div>
-            <h1 className="text-lg font-bold text-text">Private key not loaded</h1>
-            <p className="text-sm text-text-muted mt-1 leading-relaxed">
+            <h1 className="text-lg font-bold text-[#E9EDEF]">Private key not loaded</h1>
+            <p className="text-sm text-[#8696A0] mt-1 leading-relaxed">
               For security, SilentKey does not store your private key.
               Please sign in again to decrypt this conversation.
             </p>
           </div>
-          <div className="rounded-xl bg-surface-elevated border border-border px-4 py-3 text-xs text-text-muted leading-relaxed">
+          <div className="rounded-xl bg-[#202C33] border border-[#2A3942] px-4 py-3 text-xs text-[#8696A0] leading-relaxed">
             🔒 Your private key exists in memory only while you are signed in.
             It is cleared when you close the tab or refresh.
           </div>
@@ -366,111 +346,168 @@ function ChatContent() {
     );
   }
 
-  // ── Full chat ────────────────────────────────────────────────────────────────
+  // ── Full chat layout ─────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col h-screen bg-background overflow-hidden">
-      <ChatHeader
-        displayName={displayName}
-        username={username || undefined}
-        isLoading={isLoadingKey || isLoadingMessages}
-        socketStatus={socketStatus}
-        recipientOnline={recipientOnline}
-        onReload={loadChat}
-      />
-
-      {/* Reconnect bar */}
-      {(socketStatus === "closed" || socketStatus === "error") && (
-        <div className="flex items-center justify-between px-4 py-2 bg-warning/10 border-b border-warning/20 text-xs text-warning shrink-0">
-          <span>
-            {socketStatus === "error"
-              ? "WebSocket connection error — messages are using REST fallback."
-              : "Real-time disconnected — messages are using REST fallback."}
-          </span>
-          <button
-            onClick={reconnect}
-            className="ml-4 font-semibold underline hover:opacity-80 transition-opacity"
-          >
-            Reconnect
-          </button>
-        </div>
-      )}
-
-      {/* Thread */}
-      <main
-        className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-2"
-        aria-label="Message thread"
-        role="list"
+    <div className="flex h-screen bg-[#0B141A] overflow-hidden">
+      
+      {/* ── Sidebar (Hidden on mobile, visible on desktop) ───── */}
+      <aside
+        className={[
+          "relative hidden md:flex",
+          "w-[380px] shrink-0",
+          "h-full",
+          "flex-col border-r border-[#2A3942] bg-[#111B21]",
+          "z-30",
+        ].join(" ")}
+        aria-label="Conversations"
       >
-        <DecryptionNotice />
-
-        {isLoadingKey && (
-          <div className="flex justify-center py-6">
-            <div className="flex flex-col items-center gap-2">
-              <Spinner className="w-5 h-5" />
-              <p className="text-xs text-text-subtle">Loading recipient info…</p>
+        <div className="flex items-center justify-between px-4 py-3 bg-[#202C33] border-b border-[#2A3942] shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-[#2A3942] flex items-center justify-center text-[#E9EDEF] font-semibold text-base shrink-0 select-none">
+              {user.display_name.charAt(0).toUpperCase()}
             </div>
-          </div>
-        )}
-
-        {!isLoadingKey && isLoadingMessages && (
-          <div className="flex justify-center py-6">
-            <div className="flex flex-col items-center gap-2">
-              <Spinner className="w-5 h-5" />
-              <p className="text-xs text-text-subtle">Decrypting messages…</p>
-            </div>
-          </div>
-        )}
-
-        {loadError && !isLoadingKey && !isLoadingMessages && (
-          <div className="flex flex-col items-center gap-3 py-8">
-            <p className="text-sm text-danger text-center">{loadError}</p>
-            <Button variant="ghost" size="sm" onClick={loadChat}>Retry</Button>
-          </div>
-        )}
-
-        {!isLoadingKey && !isLoadingMessages && !loadError && messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center flex-1 gap-4 py-16 text-center">
-            <div className="w-16 h-16 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center">
-              <svg viewBox="0 0 24 24" fill="none" className="w-7 h-7 text-primary" aria-hidden="true">
-                <rect x="5" y="11" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="1.5" />
-                <path d="M8 11V7a4 4 0 018 0v4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                <circle cx="12" cy="16" r="1.5" fill="currentColor" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-text">No messages yet</p>
-              <p className="text-xs text-text-muted mt-1">
-                Send the first encrypted message to {displayName}
+            <div className="flex-1 min-w-0">
+              <p className="text-[15px] font-semibold text-[#E9EDEF] truncate leading-tight">
+                {user.display_name}
               </p>
             </div>
           </div>
+          <button
+            onClick={handleSignOut}
+            className="p-2 text-[#8696A0] hover:text-[#E9EDEF] hover:bg-[#2A3942]/50 rounded-full transition-colors"
+            title="Sign out"
+          >
+            <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+              <path d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15M12 9l-3 3m0 0l3 3m-3-3h12.75" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        </div>
+        <div className="border-b border-[#2A3942] py-1 bg-[#111B21]">
+          <UserSearch
+            token={accessToken!}
+            currentUserId={user.id}
+            onSelectUser={handleSelectUser}
+          />
+        </div>
+        <div className="flex-1 overflow-y-auto bg-[#111B21]">
+          <ConversationList
+            token={accessToken!}
+            currentUserId={user.id}
+            onSelectConversation={handleSelectConversation}
+          />
+        </div>
+      </aside>
+
+      {/* ── Main Chat Area ───────────────────────────────────────────────── */}
+      <main className="flex-1 flex flex-col h-full overflow-hidden chat-bg relative" id="main-content">
+        <ChatHeader
+          displayName={displayName}
+          username={username || undefined}
+          isLoading={isLoadingKey || isLoadingMessages}
+          socketStatus={socketStatus}
+          recipientOnline={recipientOnline}
+          onReload={loadChat}
+        />
+
+        {/* Reconnect bar */}
+        {(socketStatus === "closed" || socketStatus === "error") && (
+          <div className="flex items-center justify-between px-4 py-2 bg-[#f59e0b]/10 border-b border-[#f59e0b]/20 text-xs text-[#f59e0b] shrink-0">
+            <span>
+              {socketStatus === "error"
+                ? "WebSocket connection error — messages are using REST fallback."
+                : "Real-time disconnected — messages are using REST fallback."}
+            </span>
+            <button
+              onClick={reconnect}
+              className="ml-4 font-semibold underline hover:opacity-80 transition-opacity"
+            >
+              Reconnect
+            </button>
+          </div>
         )}
 
-        {messages.map((msg, idx) => {
-          const prevMsg = messages[idx - 1];
-          const showDayLabel = !prevMsg || !isSameDay(prevMsg.createdAt, msg.createdAt);
-          return (
-            <div key={msg.id}>
-              {showDayLabel && (
-                <div className="flex justify-center my-2">
-                  <span className="text-[10px] text-text-subtle bg-surface border border-border rounded-full px-3 py-1">
-                    {formatDayLabel(msg.createdAt)}
-                  </span>
-                </div>
-              )}
-              <MessageBubble message={msg} />
+        {/* Thread */}
+        <div
+          className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-1.5"
+          aria-label="Message thread"
+          role="list"
+        >
+          <DecryptionNotice />
+
+          {isLoadingKey && (
+            <div className="flex justify-center py-6">
+              <div className="flex flex-col items-center gap-2 bg-[#202C33] px-4 py-2 rounded-xl shadow-sm">
+                <Spinner className="w-5 h-5" />
+                <p className="text-[11px] text-[#8696A0]">Loading contact…</p>
+              </div>
             </div>
-          );
-        })}
+          )}
 
-        <div ref={bottomRef} aria-hidden="true" />
+          {!isLoadingKey && isLoadingMessages && (
+            <div className="flex justify-center py-6">
+              <div className="flex flex-col items-center gap-2 bg-[#202C33] px-4 py-2 rounded-xl shadow-sm">
+                <Spinner className="w-5 h-5" />
+                <p className="text-[11px] text-[#8696A0]">Decrypting messages…</p>
+              </div>
+            </div>
+          )}
+
+          {loadError && !isLoadingKey && !isLoadingMessages && (
+            <div className="flex flex-col items-center gap-3 py-8">
+              <div className="bg-[#202C33] px-6 py-4 rounded-xl shadow-sm flex flex-col items-center border border-[#2A3942]">
+                <p className="text-sm text-[#ef4444] text-center mb-3">{loadError}</p>
+                <Button variant="ghost" size="sm" onClick={loadChat}>Retry</Button>
+              </div>
+            </div>
+          )}
+
+          {!isLoadingKey && !isLoadingMessages && !loadError && messages.length === 0 && (
+            <div className="flex flex-col items-center justify-center flex-1 gap-4 py-16 text-center">
+              <div className="bg-[#202C33] px-6 py-5 rounded-2xl shadow-sm border border-[#2A3942] max-w-sm">
+                <div className="w-12 h-12 mx-auto rounded-full bg-[#25D366]/10 flex items-center justify-center mb-4">
+                  <svg viewBox="0 0 24 24" fill="none" className="w-6 h-6 text-[#25D366]" aria-hidden="true">
+                    <rect x="5" y="11" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="1.5" />
+                    <path d="M8 11V7a4 4 0 018 0v4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  </svg>
+                </div>
+                <p className="text-sm font-medium text-[#E9EDEF]">No messages yet</p>
+                <p className="text-xs text-[#8696A0] mt-1.5 leading-relaxed">
+                  Send a message to start an end-to-end encrypted chat with {displayName}.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {messages.map((msg, idx) => {
+            const prevMsg = messages[idx - 1];
+            const showDayLabel = !prevMsg || !isSameDay(prevMsg.createdAt, msg.createdAt);
+            
+            // Add a little extra margin top if the sender changes (optional, but looks better)
+            const showTail = !prevMsg || prevMsg.fromUserId !== msg.fromUserId || showDayLabel;
+
+            return (
+              <div key={msg.id} className={showTail ? "mt-1.5" : "mt-0.5"}>
+                {showDayLabel && (
+                  <div className="flex justify-center my-3">
+                    <span className="text-[11px] text-[#8696A0] font-medium bg-[#111B21]/80 backdrop-blur-sm border border-[#2A3942]/50 rounded-lg px-3 py-1.5 shadow-sm">
+                      {formatDayLabel(msg.createdAt)}
+                    </span>
+                  </div>
+                )}
+                <MessageBubble message={msg} />
+              </div>
+            );
+          })}
+
+          <div ref={bottomRef} aria-hidden="true" className="h-2" />
+        </div>
+
+        <ChatComposer
+          onSend={handleSend}
+          disabled={!recipientPublicKey || isLoadingKey}
+          isSending={isSending}
+        />
       </main>
-
-      <ChatComposer
-        onSend={handleSend}
-        disabled={!recipientPublicKey || isLoadingKey}
-        isSending={isSending}
-      />
     </div>
   );
 }
@@ -481,8 +518,8 @@ export default function ChatPage() {
   return (
     <Suspense
       fallback={
-        <div className="min-h-screen flex items-center justify-center bg-background">
-          <div className="w-7 h-7 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+        <div className="min-h-screen flex items-center justify-center bg-[#0B141A]">
+          <Spinner />
         </div>
       }
     >

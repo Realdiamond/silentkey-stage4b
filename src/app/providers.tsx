@@ -2,17 +2,24 @@
 
 import { AuthProvider } from "@/context/AuthContext";
 import { UnreadProvider } from "@/context/UnreadContext";
+import { SocketProvider } from "@/context/SocketContext";
 import type { ReactNode } from "react";
 
 /**
  * Client boundary wrapper for all app-wide providers.
- * Imported by the root layout (a Server Component) to maintain
- * Next.js metadata support while enabling client-side context.
+ * Order matters:
+ *   AuthProvider    — session, tokens, privateKey
+ *   UnreadProvider  — in-memory unread counts
+ *   SocketProvider  — global WebSocket (depends on Auth + Unread)
  */
 export function Providers({ children }: { children: ReactNode }) {
   return (
     <AuthProvider>
-      <UnreadProvider>{children}</UnreadProvider>
+      <UnreadProvider>
+        <SocketProvider>
+          {children}
+        </SocketProvider>
+      </UnreadProvider>
     </AuthProvider>
   );
 }

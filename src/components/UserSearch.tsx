@@ -60,7 +60,7 @@ export function UserSearch({ token, currentUserId, onSelectUser }: UserSearchPro
       <div className="px-3 py-2">
         <div className="relative">
           <svg
-            className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-subtle pointer-events-none"
+            className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#8696A0] pointer-events-none"
             viewBox="0 0 24 24" fill="none" aria-hidden="true"
           >
             <circle cx="11" cy="11" r="8" stroke="currentColor" strokeWidth="1.5" />
@@ -71,12 +71,12 @@ export function UserSearch({ token, currentUserId, onSelectUser }: UserSearchPro
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search users…"
+            placeholder="Search or start new chat"
             aria-label="Search for users"
-            className="w-full bg-surface-elevated border border-border rounded-lg py-2 pl-9 pr-3 text-sm text-text placeholder:text-text-subtle focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary transition-colors"
+            className="w-full bg-[#2A3942] border-none rounded-lg py-2 pl-9 pr-3 text-sm text-[#E9EDEF] placeholder:text-[#8696A0] focus:outline-none focus:ring-1 focus:ring-[#25D366]/40 transition-colors"
           />
           {isSearching && (
-            <span className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-primary border-t-transparent animate-spin" aria-hidden="true" />
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-[#25D366] border-t-transparent animate-spin" aria-hidden="true" />
           )}
         </div>
       </div>
@@ -85,11 +85,11 @@ export function UserSearch({ token, currentUserId, onSelectUser }: UserSearchPro
       {query.trim().length >= 2 && (
         <div className="flex flex-col">
           {error && (
-            <p className="px-4 py-2 text-xs text-danger">{error}</p>
+            <p className="px-4 py-2 text-xs text-[#ef4444]">{error}</p>
           )}
 
           {!isSearching && !error && results.length === 0 && (
-            <p className="px-4 py-2 text-xs text-text-subtle">
+            <p className="px-4 py-3 text-xs text-[#8696A0]">
               No users found for &ldquo;{query}&rdquo;
             </p>
           )}
@@ -98,19 +98,19 @@ export function UserSearch({ token, currentUserId, onSelectUser }: UserSearchPro
             <button
               key={user.id}
               onClick={() => handleSelect(user)}
-              className="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-hover transition-colors text-left group"
+              className="flex items-center gap-3 px-3 py-2.5 hover:bg-[#2A3942]/60 transition-colors text-left"
             >
               {/* Avatar */}
-              <div className="w-8 h-8 rounded-full bg-secondary/15 border border-secondary/20 flex items-center justify-center text-secondary font-semibold text-sm shrink-0">
+              <div className="w-10 h-10 rounded-full bg-[#2A3942] flex items-center justify-center text-[#E9EDEF] font-semibold text-base shrink-0">
                 {user.display_name.charAt(0).toUpperCase()}
               </div>
 
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-text truncate">{user.display_name}</p>
-                <p className="text-xs text-text-muted">@{user.username}</p>
+                <p className="text-sm font-medium text-[#E9EDEF] truncate">{user.display_name}</p>
+                <p className="text-xs text-[#8696A0]">@{user.username}</p>
               </div>
 
-              <span className="text-xs text-primary opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+              <span className="text-xs text-[#25D366] shrink-0">
                 Chat →
               </span>
             </button>

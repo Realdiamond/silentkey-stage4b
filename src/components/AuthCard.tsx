@@ -22,8 +22,8 @@ function LogoMark({ className }: { className?: string }) {
         strokeLinecap="round" strokeLinejoin="round" />
       <defs>
         <linearGradient id="ac-grad" x1="0" y1="0" x2="32" y2="32">
-          <stop stopColor="#00d4aa" />
-          <stop offset="1" stopColor="#7c6cf0" />
+          <stop stopColor="#25D366" />
+          <stop offset="1" stopColor="#128C7E" />
         </linearGradient>
       </defs>
     </svg>
@@ -35,8 +35,8 @@ export function AuthCard({ title, subtitle, children, footerLink }: AuthCardProp
     <main className="min-h-screen flex flex-col items-center justify-center bg-background px-4 py-12">
       {/* Subtle background glow */}
       <div
-        className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[400px] pointer-events-none opacity-[0.07]"
-        style={{ background: "radial-gradient(ellipse, #00d4aa 0%, #7c6cf0 60%, transparent 80%)", filter: "blur(60px)" }}
+        className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[400px] pointer-events-none opacity-[0.05]"
+        style={{ background: "radial-gradient(ellipse, #25D366 0%, #128C7E 60%, transparent 80%)", filter: "blur(60px)" }}
         aria-hidden="true"
       />
 
